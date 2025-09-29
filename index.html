@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Willy Wally Runner (Dino-style)</title>
+  <style>
+    :root {
+      --bg: #f6f7f8;
+      --fg: #2b2d31;
+      --muted: #9aa1a7;
+      --card: #ffffff;
+      --shadow: 0 10px 30px rgba(0,0,0,.08);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, Apple SD Gothic Neo, "Apple Color Emoji", "Segoe UI Emoji";
+      background: var(--bg); color: var(--fg); display: grid; place-items: center; gap: 18px; padding: 16px;
+    }
+    .wrap { width: min(900px, 100%); }
+    .card { background: var(--card); border-radius: 18px; box-shadow: var(--shadow); padding: 14px 14px 18px; }
+    h1 { margin: 6px 0 8px; font-size: 20px; }
+    .meta { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
+    .scores { display:flex; gap:12px; font-variant-numeric: tabular-nums; }
+    .badge { background:#eef2f7; color:#111827; padding:6px 10px; border-radius:999px; font-size:13px; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; }
+    button { cursor:pointer; border:0; padding:10px 14px; border-radius:12px; background:#111827; color:#fff; box-shadow: var(--shadow); font-weight:600; }
+    button.secondary { background:#e5e7eb; color:#111827; }
+    canvas { width:100%; height:auto; display:block; background: #ffffff; border-radius: 14px; box-shadow: inset 0 0 0 1px #e5e7eb; }
+    footer { text-align:center; color:var(--muted); font-size:12px; margin-top:8px; }
+    .hint { color: var(--muted); font-size: 12px; }
+    .mobile-ctr { margin-top:10px; display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; }
+    .pill { padding:12px 10px; border-radius:12px; background:#f1f5f9; text-align:center; font-weight:700; user-select:none; }
+  </style>
+</head>
+<body>
+  <div class="wrap card">
+    <h1>🟠 Willy Wally Runner</h1>
+    <div class="meta">
+      <div class="scores">
+        <span class="badge">점수 <strong id="score">0</strong></span>
+        <span class="badge">최고 <strong id="best">0</strong></span>
+        <span class="badge hint">Space/↑ 점프 · P 일시정지 · R 재시작</span>
+      </div>
+      <div class="controls">
+        <button id="btnStart">Start</button>
+        <button class="secondary" id="btnPause">Pause</button>
+        <button class="secondary" id="btnReset">Reset</button>
+      </div>
+    </div>
+    <canvas id="game" width="900" height="260" aria-label="runner game"></canvas>
+    <div class="mobile-ctr">
+      <div class="pill" id="tapLeft">⟲ Restart</div>
+      <div class="pill" id="tapJump">⤴ Jump</div>
+      <div class="pill" id="tapPause">⏸ Pause</div>
+    </div>
+  </div>
+  <footer>바닐라 JS 러너. DinoRunner 느낌, 흰 배경 / 도트 닥스훈트 / 당근&먹구름 장애물.</footer>
+
+<script>
+(() => {
+  const DPR = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const baseW = canvas.width, baseH = canvas.height;
+  function resizeForDPR(){
+    canvas.width = baseW * DPR; canvas.height = baseH * DPR;
+    canvas.style.width = baseW + 'px'; canvas.style.height = baseH + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  resizeForDPR();
+  window.addEventListener('resize', resizeForDPR);
+
+  const GROUND_Y = 200;
+  const GRAVITY = 0.6;
+  const JUMP_V = -11.5;
+  const WORLD_SPEED_START = 5.5;
+  const SPAWN_COOLDOWN_MIN = 50;
+  const SPAWN_COOLDOWN_MAX = 120;
+
+  const THEME = {
+    sky: '#ffffff',
+    groundLine: '#a7b3c2',
+    primary: '#111827',
+    carrot: '#f97316',
+    carrotLeaf: '#16a34a',
+    storm: '#504A4B',
+    dog: '#4A2511'
+  };
+
+  let state = 'ready';
+  let worldSpeed = WORLD_SPEED_START;
+  let frame = 0;
+  let score = 0;
+  let best = Number(localStorage.getItem('runner-best') || '0');
+  document.getElementById('best').textContent = best;
+
+  const DOG = {
+    scale: 2,
+    color: THEME.dog,
+    frames: [
+      [
+        '....XX..........',
+        '...XXXXXXX......',
+        'XXXXXXXXXXXX....',
+        'XXXXXXXXXXXXXX..',
+        'XXXXXXXXXXXXXXX.',
+        '..XXXX..XXXXXX..',
+        '..XXX....XXXX...',
+        '.XX..XX..XX.....'
+      ],
+      [
+        '....XX..........',
+        '...XXXXXXX......',
+        'XXXXXXXXXXXX....',
+        'XXXXXXXXXXXXXX..',
+        'XXXXXXXXXXXXXXX.',
+        '..XXXX..XXXXXX..',
+        '..XXX....XXXX...',
+        '.XX.XX....XX....'
+      ]
+    ],
+    eyeOffset: { x: -5, y: 5 }
+  };
+  const DOG_COLS = DOG.frames[0][0].length;
+  const DOG_ROWS = DOG.frames[0].length;
+
+  const player = {
+    x: 60, y: GROUND_Y - DOG_ROWS*DOG.scale, w: DOG_COLS*DOG.scale, h: DOG_ROWS*DOG.scale,
+    vy: 0,
+    jumping: false,
+    animTick: 0,
+    frameIndex: 0,
+    draw(){
+      drawDogPixel(this.x, this.y, DOG, this.frameIndex);
+    },
+    update(){
+      this.y += this.vy; this.vy += GRAVITY;
+      const ground = GROUND_Y - this.h;
+      if (this.y >= ground) { this.y = ground; this.vy = 0; this.jumping = false; }
+      if (state === 'running' && !this.jumping){
+        this.animTick++;
+        if (this.animTick % 8 === 0) this.frameIndex = (this.frameIndex + 1) % DOG.frames.length;
+      } else {
+        this.frameIndex = 0;
+      }
+    },
+    jump(){
+      if (state !== 'running') return;
+      if (!this.jumping) { this.vy = JUMP_V; this.jumping = true; sfxJump(); }
+    }
+  };
+
+  const obstacles = [];
+  let spawnCd = 90;
+  let minGap = 140;
+
+  function lastObstacle(){ return obstacles.length ? obstacles[obstacles.length-1] : null; }
+  function canSpawnNow(){
+    const last = lastObstacle();
+    if (!last) return true;
+    const gap = (canvas.width/DPR - last.x - last.w);
+    return gap > (minGap + randInt(0, 80));
+  }
+
+  function spawnObstacle(){
+    const type = Math.random() < 0.7 ? 'carrotGround' : 'storm';
+    if (type === 'carrotGround') {
+      const variants = [ {w:18,h:28}, {w:24,h:36}, {w:30,h:46} ];
+      const v = variants[Math.floor(Math.random()*variants.length)];
+      obstacles.push({ type, x: canvas.width/DPR + 10, y: GROUND_Y - v.h, w: v.w, h: v.h, vx: -worldSpeed });
+      minGap = 140 + Math.min(220, Math.floor(worldSpeed*10));
+    } else {
+      const w = 46, h = 22;
+      const levels = [GROUND_Y-70, GROUND_Y-100, GROUND_Y-130];
+      const y = levels[Math.floor(Math.random()*levels.length)];
+      obstacles.push({ type, x: canvas.width/DPR + 10, y, w, h, vx: -worldSpeed, flap: 0 });
+      minGap = 160 + Math.min(240, Math.floor(worldSpeed*9));
+    }
+  }
+
+  function updateObstacles(){
+    for (const o of obstacles){ o.x += o.vx; if (o.type === 'storm') o.flap++; }
+    while (obstacles.length && obstacles[0].x + obstacles[0].w < -50) obstacles.shift();
+    if (spawnCd-- <= 0){
+      if (canSpawnNow()) { spawnObstacle(); }
+      spawnCd = randInt(SPAWN_COOLDOWN_MIN, SPAWN_COOLDOWN_MAX) - Math.floor(worldSpeed*4);
+      if (spawnCd < 26) spawnCd = 26;
+      if (!canSpawnNow()) spawnCd = 12;
+    }
+  }
+
+  function drawObstacles(){
+    for (const o of obstacles){
+      if (o.type === 'carrotGround') drawGroundCarrot(o.x, o.y, o.w, o.h);
+      else drawStorm(o.x, o.y, o.w, o.h, o.flap);
+    }
+  }
+
+  function collide(a, b){
+    const padA = 6;
+    const padB = 2;
+    return !(a.x+padA > b.x+b.w-padB || a.x+a.w-padA < b.x+padB || a.y+padA > b.y+b.h-padB || a.y+a.h-padA < b.y+padB);
+  }
+
+  function updateClouds(){}
+  function drawClouds(){}
+
+  function reset(){
+    obstacles.length = 0;
+    spawnCd = 60;
+    worldSpeed = WORLD_SPEED_START;
+    frame = 0; score = 0; nextCheckpoint = 100;
+    player.x = 60; player.y = GROUND_Y - player.h; player.vy = 0; player.jumping = false; player.animTick = 0; player.frameIndex = 0;
+    state = 'ready';
+    paint();
+    updateHUD();
+  }
+  function start(){
+    if (state === 'ready' || state === 'gameover') {
+      initAudio();
+      state = 'running';
+    }
+  }
+  function pause(){ if (state === 'running') state = 'paused'; else if (state === 'paused') state = 'running'; }
+  function gameover(){ state = 'gameover'; best = Math.max(best, Math.floor(score)); localStorage.setItem('runner-best', String(best)); sfxDie(); updateHUD(); }
+
+  function updateHUD(){
+    document.getElementById('score').textContent = Math.floor(score);
+    document.getElementById('best').textContent = best;
+  }
+
+  function step(){
+    if (state === 'running') {
+      frame++;
+      worldSpeed += 0.0007;
+      updateClouds();
+      player.update();
+      updateObstacles();
+      for (const o of obstacles){ if (collide(player, o)) { gameover(); break; } }
+      score += 0.2 + worldSpeed*0.02;
+      if (score >= nextCheckpoint) { sfxCheckpoint(); nextCheckpoint += 100; }
+      updateHUD();
+    }
+    paint();
+    requestAnimationFrame(step);
+  }
+
+  function paint(){
+    ctx.clearRect(0,0,canvas.width/DPR, canvas.height/DPR);
+    ctx.fillStyle = THEME.sky;
+    ctx.fillRect(0,0,canvas.width/DPR, canvas.height/DPR);
+
+    ctx.strokeStyle = THEME.groundLine;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, GROUND_Y+1); ctx.lineTo(canvas.width/DPR, GROUND_Y+1); ctx.stroke();
+
+    player.draw();
+    drawObstacles();
+
+    if (state === 'ready') drawBanner('Start/Space/↑ 시작');
+    else if (state === 'paused') drawBanner('일시정지 (P / Pause)');
+    else if (state === 'gameover') drawBanner('게임 오버! R로 재시작');
+  }
+
+  function roundRect(ctx, x, y, w, h, r, color){
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x+r, y);
+    ctx.arcTo(x+w, y, x+w, y+h, r);
+    ctx.arcTo(x+w, y+h, x, y+h, r);
+    ctx.arcTo(x, y+h, x, y, r);
+    ctx.arcTo(x, y, x+w, y, r);
+    ctx.closePath(); ctx.fill();
+  }
+
+  function drawGroundCarrot(x,y,w,h){
+    const wt = Math.max(8, w * 0.9);
+    const wb = Math.max(4, w * 0.35);
+    const cx = x + w/2;
+    const topY = y;
+    const botY = y + h;
+    const halfT = wt/2, halfB = wb/2;
+    ctx.fillStyle = THEME.carrot;
+    ctx.beginPath();
+    ctx.moveTo(cx - halfT, topY);
+    ctx.lineTo(cx + halfT, topY);
+    ctx.lineTo(cx + halfB, botY);
+    ctx.lineTo(cx - halfB, botY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = THEME.carrotLeaf;
+    ctx.beginPath();
+    ctx.ellipse(cx - 6, topY - 6, 6, 3, -0.6, 0, Math.PI*2);
+    ctx.ellipse(cx + 6, topY - 6, 6, 3,  0.6, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  function drawStorm(x,y,w,h,flap){
+    const bob = Math.sin((flap||0)/18)*1.8; y += bob;
+    ctx.fillStyle = THEME.storm;
+    ctx.beginPath();
+    const r1 = h*0.55, r2 = h*0.7, r3 = h*0.5;
+    ctx.arc(x + w*0.25, y + h*0.6, r1, 0, Math.PI*2);
+    ctx.arc(x + w*0.5,  y + h*0.5, r2, 0, Math.PI*2);
+    ctx.arc(x + w*0.75, y + h*0.65, r3, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  function drawBanner(text){
+    ctx.fillStyle = 'rgba(17,24,39,.85)';
+    const w = Math.max(220, ctx.measureText(text).width + 40);
+    const x = (canvas.width/DPR - w)/2;
+    const y = 40;
+    roundRect(ctx, x, y, w, 42, 10, 'rgba(17,24,39,.85)');
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px ui-sans-serif, system-ui';
+    ctx.fillText(text, x+20, y+26);
+  }
+
+  function randInt(a,b){ return a + Math.floor(Math.random()*(b-a+1)); }
+
+  function drawDogPixel(x, y, DOG, frameIndex=0){
+    const s = DOG.scale; const color = DOG.color;
+    const rows = DOG.frames[frameIndex].length;
+    const cols = DOG.frames[frameIndex][0].length;
+    ctx.fillStyle = color;
+    for (let r=0; r<rows; r++){
+      const line = DOG.frames[frameIndex][r];
+      for (let c=0; c<cols; c++){
+        if (line[c] === 'X') ctx.fillRect(x + c*s, y + r*s, s, s);
+      }
+    }
+    ctx.fillStyle = '#ffffff';
+    const eyeX = x + (cols + DOG.eyeOffset.x)*s;
+    const eyeY = y + (DOG.eyeOffset.y)*s;
+    ctx.fillRect(eyeX, eyeY, s, s);
+  }
+
+  let AC, master; let nextCheckpoint = 100;
+  function initAudio(){
+    if (!AC) { AC = new (window.AudioContext || window.webkitAudioContext)(); master = AC.createGain(); master.gain.value = 0.15; master.connect(AC.destination); }
+  }
+  function blip(freq=440, dur=0.08, type='square'){
+    initAudio(); const o = AC.createOscillator(); const g = AC.createGain();
+    o.type = type; o.frequency.value = freq; o.connect(g); g.connect(master);
+    g.gain.setValueAtTime(0, AC.currentTime);
+    g.gain.linearRampToValueAtTime(1, AC.currentTime + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + dur);
+    o.start(); o.stop(AC.currentTime + dur + 0.02);
+  }
+  function sfxJump(){ blip(720, 0.06, 'square'); }
+  function sfxDie(){ blip(220, 0.18, 'sawtooth'); setTimeout(()=>blip(160, 0.22, 'sawtooth'), 70); }
+  function sfxCheckpoint(){ blip(660, 0.06, 'square'); setTimeout(()=>blip(880, 0.06, 'square'), 70); }
+
+  window.addEventListener('keydown', (e)=>{
+    if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); if (state === 'ready') start(); player.jump(); }
+    else if (e.code === 'KeyP') { e.preventDefault(); pause(); }
+    else if (e.code === 'KeyR') { e.preventDefault(); reset(); start(); }
+  }, {passive:false});
+
+  canvas.addEventListener('pointerdown', ()=>{ if (state === 'ready') start(); player.jump(); });
+  document.getElementById('btnStart').addEventListener('click', start);
+  document.getElementById('btnPause').addEventListener('click', pause);
+  document.getElementById('btnReset').addEventListener('click', ()=>{ reset(); start(); });
+  document.getElementById('tapJump').addEventListener('click', ()=>{ if (state === 'ready') start(); player.jump(); });
+  document.getElementById('tapPause').addEventListener('click', pause);
+  document.getElementById('tapLeft').addEventListener('click', ()=>{ reset(); start(); });
+
+  function runTests(){
+    try {
+      console.assert(typeof drawGroundCarrot === 'function', 'drawGroundCarrot missing');
+      console.assert(typeof drawStorm === 'function', 'drawStorm missing');
+      console.assert(typeof updateClouds === 'function', 'updateClouds missing');
+      console.assert(randInt(1,1) === 1, 'randInt exact bound failed');
+      for (let i=0;i<20;i++){ const r=randInt(2,5); console.assert(r>=2 && r<=5, 'randInt range'); }
+      const coll = collide({x:0,y:0,w:10,h:10}, {x:9,y:0,w:10,h:10});
+      console.assert(coll === true, 'collide edge overlap');
+      const saved = obstacles.slice();
+      obstacles.length = 0; const before = obstacles.length; spawnObstacle();
+      console.assert(obstacles.length === before+1, 'spawnObstacle should push');
+      console.assert(['carrotGround','storm'].includes(obstacles[0].type), 'spawn type invalid');
+      obstacles.length = 0; saved.forEach(o=>obstacles.push(o));
+      console.log('%c[Tests] All basic checks passed','color:green');
+    } catch(e){ console.error('[Tests] Failed', e); }
+  }
+
+  runTests();
+  reset();
+  requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
